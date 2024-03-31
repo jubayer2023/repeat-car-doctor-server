@@ -1,6 +1,8 @@
 // Requirements
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
@@ -11,8 +13,13 @@ const port = process.env.PORT || 5000;
 
 
 // middleware from express
-app.use(cors());
+app.use(cors({
+	origin: ['http://localhost:5173'],
+	credentials: true
+}));
 app.use(express.json());
+app.use(cookieParser());
+
 
 
 console.log(process.env.DB_USER, process.env.DB_PASS)
@@ -29,6 +36,38 @@ const client = new MongoClient(uri, {
 	}
 });
 
+// custom middleware for verify
+const logoer = async (req, res, next) => {
+	const token = req.cookies.token;
+	console.log('custom middleware :', req.url, req.hostname);
+	next();
+}
+
+const verifyToken = async (req, res, next) => {
+	const token = req.cookies.token;
+	if (!token) {
+		return res
+			.status(401)
+			.send({ message: 'Unauthorized' })
+	}
+	else {
+		console.log('token from middleware :', token);
+		jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+			if (err) {
+				return res
+					.status(401)
+					.send({ message: 'Unauthorized' })
+			}
+			else {
+				// console.log(`" decoded message " :`, decoded);
+				req.user = decoded;
+				next();
+			}
+		})
+	}
+}
+
+
 
 
 
@@ -44,9 +83,34 @@ async function run() {
 		const bookingCollection = client.db('carDoctor').collection('bookings');
 
 
+		// jwt auth related api
+		app.post('/jwt', async (req, res) => {
+			const user = req.body;
+			// console.log(user);
+			const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '2h' });
+
+			console.log(token);
+			res
+				.cookie('token', token, {
+					httpOnly: true,
+					secure: true,
+					sameSite: 'none'
+				})
+				.send({ success: true });
+		})
+
+		app.post('/logout', async (req, res) => {
+			const user = req.body;
+			console.log('logged out');
+			res
+				.clearCookie('token', { maxAge: 0 })
+				.send({ logOut: 'success' })
+		})
+
+
 
 		// get servises
-		app.get('/services', async (req, res) => {
+		app.get('/services', logoer, async (req, res) => {
 			const cursor = serviceCollection.find();
 			const services = await cursor.toArray();
 			res.send(services);
@@ -67,11 +131,19 @@ async function run() {
 
 
 		// get bookingsinfo
-		app.get('/bookings', async (req, res) => {
+		app.get('/bookings', verifyToken, async (req, res) => {
 
 
-
+			// console.log('Cookies token : ', req.cookies.token);
 			// // console.log(req.query.email);
+			console.log(`" decoded message after verify " :`, req.user);
+
+			const verifiedEmail = req.user?.email;
+			const requestedEmail = req.query?.email;
+
+			if (verifiedEmail !== requestedEmail) {
+				return res.status(403).send({ message: 'Access denied' })
+			}
 
 			let query = {};
 			if (req.query?.email) {
